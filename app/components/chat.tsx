@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { AssistantStream } from "openai/lib/AssistantStream";
 import Markdown from "react-markdown";
 
 type MessageProps = {
@@ -44,7 +43,7 @@ const Chat = ({ onReceiveAvailabilities }: ChatProps) => {
   const [userInput, setUserInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [inputDisabled, setInputDisabled] = useState(false);
-  const [threadId, setThreadId] = useState("");
+  const [conversationId, setConversationId] = useState("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -53,19 +52,19 @@ const Chat = ({ onReceiveAvailabilities }: ChatProps) => {
     scrollToBottom();
   }, [messages]);
   useEffect(() => {
-    const createThread = async () => {
+    const createConversation = async () => {
       const res = await fetch(`/api/assistants/threads`, {
         method: "POST",
       });
       const data = await res.json();
-      setThreadId(data.threadId);
+      setConversationId(data.conversationId);
     };
-    createThread();
+    createConversation();
   }, []);
 
   const sendMessage = async (text) => {
     const response = await fetch(
-      `/api/assistants/threads/${threadId}/messages`,
+      `/api/assistants/threads/${conversationId}/messages`,
       {
         method: "POST",
         body: JSON.stringify({
@@ -74,31 +73,51 @@ const Chat = ({ onReceiveAvailabilities }: ChatProps) => {
       }
     );
 
-    const stream = AssistantStream.fromReadableStream(response.body);
-    stream.on("textCreated", () => {
-      setMessages((prevMessages) => [
-        ...prevMessages,
-        { role: "assistant", text: "" },
-      ]);
-    });
-    stream.on("textDelta", (event) => {
-      setMessages((prevMessages) => {
-        const lastMessage = prevMessages[prevMessages.length - 1];
-        const updatedLastMessage = {
-          ...lastMessage,
-          text: lastMessage.text + event.value,
-        };
-        return [...prevMessages.slice(0, -1), updatedLastMessage];
-      });
-    });
-    stream.on("event", (event) => {
-      console.log("event", event);
-      if (event.event === "thread.run.completed") setInputDisabled(false);
-      // @ts-ignore
-      if (event.event === "search_availability")
-        // @ts-ignore
-        onReceiveAvailabilities(event.data);
-    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let assistantMessageCreated = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        setInputDisabled(false);
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line);
+
+          if (event.type === "response.output_text.delta") {
+            if (!assistantMessageCreated) {
+              setMessages((prevMessages) => [
+                ...prevMessages,
+                { role: "assistant", text: "" },
+              ]);
+              assistantMessageCreated = true;
+            }
+            setMessages((prevMessages) => {
+              const lastMessage = prevMessages[prevMessages.length - 1];
+              const updatedLastMessage = {
+                ...lastMessage,
+                text: lastMessage.text + event.delta,
+              };
+              return [...prevMessages.slice(0, -1), updatedLastMessage];
+            });
+          } else if (event.event === "search_availability") {
+            onReceiveAvailabilities(event.data);
+          }
+        } catch (err) {
+          console.log("err parse", line);
+        }
+      }
+    }
   };
 
   const handleSubmit = (e) => {

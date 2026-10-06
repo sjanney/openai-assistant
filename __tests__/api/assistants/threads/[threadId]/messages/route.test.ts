@@ -3,7 +3,7 @@ import { openai } from "@/app/openai";
 
 describe("test search availabilities", () => {
   it("checks the assistant's run completed and availibilities returned", async () => {
-    const thread = await openai.beta.threads.create();
+    const conversation = await openai.conversations.create();
     const data = await POST(
       // @ts-ignore
       {
@@ -12,7 +12,7 @@ describe("test search availabilities", () => {
             content: "book for today",
           }),
       },
-      { params: { threadId: thread.id } }
+      { params: { threadId: conversation.id } }
     );
     const events = [];
     const reader = data.body.getReader();
@@ -32,7 +32,7 @@ describe("test search availabilities", () => {
     }
 
     expect(
-      events.find((event) => event.event === "thread.run.completed")!!
+      events.find((event) => event.type === "response.completed")!!
     ).toBeTruthy();
     expect(
       events.find((event) => event.event === "search_availability")!!

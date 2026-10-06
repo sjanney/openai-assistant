@@ -1,80 +1,120 @@
-import { assistantId } from "@/app/assistant-config";
 import { openai } from "@/app/openai";
-import { AssistantStreamEvent } from "openai/resources/beta/assistants";
 import * as toolCallFunctions from "./toolCallFunctions";
 
 export const runtime = "nodejs";
 
-async function handleRequiresAction(
-  event: AssistantStreamEvent.ThreadRunRequiresAction,
-  controller: ReadableStreamDefaultController
-) {
-  const toolCalls = event.data.required_action.submit_tool_outputs.tool_calls;
-  const toolCallOutputs = await Promise.all(
-    toolCalls.map(async (toolCall) => {
-      let result = undefined;
-      const fn = toolCallFunctions[toolCall.function.name];
-      if (fn) {
-        // I don't  actually pass them here to show something on UI
-        // const toolCallArguments = JSON.parse(toolCall.function.arguments);
-        // result = await fn(toolCallArguments);
-        result = await fn();
-        controller.enqueue(
-          `${JSON.stringify({
-            event: toolCall.function.name,
-            data: result,
-          })}\n`
-        );
-      }
-      return {
-        output: JSON.stringify(result),
-        tool_call_id: toolCall.id,
-      };
-    })
-  );
+const PROMPT_CONFIG = {
+  model: "gpt-4o",
+  instructions: "You are a helpful assistant.",
+  tools: [
+    { type: "code_interpreter" },
+    {
+      type: "function",
+      function: {
+        name: "get_weather",
+        description: "Determine weather in my location",
+        parameters: {
+          type: "object",
+          properties: {
+            location: {
+              type: "string",
+              description: "The city and state e.g. San Francisco, CA",
+            },
+            unit: {
+              type: "string",
+              enum: ["c", "f"],
+            },
+          },
+          required: ["location"],
+        },
+      },
+    },
+    { type: "file_search" },
+  ],
+};
 
-  const submitStream = openai.beta.threads.runs.submitToolOutputsStream(
-    event.data.thread_id,
-    event.data.id,
-    { tool_outputs: toolCallOutputs }
-  );
-  submitStream.on("event", (event) => {
-    console.log("event - function", event.event);
-    controller.enqueue(`${JSON.stringify(event)}\n`);
-    if (event.event === "thread.run.completed") {
-      controller.close();
+async function handleToolCalls(
+  toolCalls: any[],
+  controller: ReadableStreamDefaultController
+): Promise<any[]> {
+  const toolCallOutputs: any[] = [];
+
+  for (const toolCall of toolCalls) {
+    const fn = toolCallFunctions[toolCall.name];
+    let result = undefined;
+    if (fn) {
+      result = await fn();
+      controller.enqueue(
+        `${JSON.stringify({
+          event: toolCall.name,
+          data: result,
+        })}\n`
+      );
     }
-  });
+    toolCallOutputs.push({
+      type: "function_call_output",
+      call_id: toolCall.call_id,
+      output: JSON.stringify(result),
+    });
+  }
+
+  return toolCallOutputs;
 }
 
 export async function POST(req: Request, { params: { threadId } }) {
   const { content } = await req.json();
+  const conversationId = threadId;
 
   return new Response(
     new ReadableStream({
       async start(controller) {
-        await openai.beta.threads.messages.create(threadId, {
-          role: "user",
-          content: content,
-        });
-        openai.beta.threads.runs
-          .stream(threadId, {
-            assistant_id: assistantId,
-          })
-          .on("event", async (event) => {
-            console.log("event - main", event.event);
-            if (event.event === "thread.run.requires_action") {
-              handleRequiresAction(event, controller);
-            } else {
+        let input: any[] = [{ role: "user", content }];
+        let hasMoreToolCalls = true;
+
+        while (hasMoreToolCalls) {
+          hasMoreToolCalls = false;
+          const toolCalls: any[] = [];
+
+          try {
+            const stream = await openai.responses.create({
+              ...PROMPT_CONFIG,
+              input,
+              conversation: conversationId,
+              stream: true,
+            });
+
+            for await (const event of stream) {
               controller.enqueue(`${JSON.stringify(event)}\n`);
-              if (event.event === "thread.run.completed") {
-                controller.close();
+
+              if (
+                event.type === "response.output_item.done" &&
+                event.item?.type === "function_call"
+              ) {
+                toolCalls.push(event.item);
               }
             }
-          })
-          .on("error", (error) => {
+
+            if (toolCalls.length > 0) {
+              hasMoreToolCalls = true;
+              const toolCallOutputs = await handleToolCalls(
+                toolCalls,
+                controller
+              );
+              input = toolCallOutputs;
+            }
+          } catch (error) {
             console.log("error", error);
-          });
+            controller.enqueue(
+              `${JSON.stringify({
+                type: "error",
+                message: String(error),
+              })}\n`
+            );
+            break;
+          }
+        }
+
+        controller.close();
       },
     }),
     {

@@ -1,13 +1,10 @@
-import { openai } from "@/app/openai";
-
 export const runtime = "nodejs";
 
-// Create a new assistant
+// Return prompt configuration for the Responses API
 export async function POST() {
-  const assistant = await openai.beta.assistants.create({
-    instructions: "You are a helpful assistant.",
-    name: "Quickstart Assistant",
+  return Response.json({
     model: "gpt-4o",
+    instructions: "You are a helpful assistant.",
     tools: [
       { type: "code_interpreter" },
       {
@@ -34,5 +31,4 @@ export async function POST() {
       { type: "file_search" },
     ],
   });
-  return Response.json({ assistantId: assistant.id });
 }

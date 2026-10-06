@@ -2,8 +2,8 @@ import { openai } from "@/app/openai";
 
 export const runtime = "nodejs";
 
-// Create a new thread
+// Create a new conversation
 export async function POST() {
-  const thread = await openai.beta.threads.create();
-  return Response.json({ threadId: thread.id });
+  const conversation = await openai.conversations.create();
+  return Response.json({ conversationId: conversation.id });
 }
