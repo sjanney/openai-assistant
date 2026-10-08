@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
-import { AssistantStream } from "openai/lib/AssistantStream";
 import Markdown from "react-markdown";
 
 type MessageProps = {
@@ -44,7 +43,7 @@ const Chat = ({ onReceiveAvailabilities }: ChatProps) => {
   const [userInput, setUserInput] = useState("");
   const [messages, setMessages] = useState([]);
   const [inputDisabled, setInputDisabled] = useState(false);
-  const [threadId, setThreadId] = useState("");
+  const [conversationId, setConversationId] = useState("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -53,19 +52,19 @@ const Chat = ({ onReceiveAvailabilities }: ChatProps) => {
     scrollToBottom();
   }, [messages]);
   useEffect(() => {
-    const createThread = async () => {
+    const createConversation = async () => {
       const res = await fetch(`/api/assistants/threads`, {
         method: "POST",
       });
       const data = await res.json();
-      setThreadId(data.threadId);
+      setConversationId(data.conversationId);
     };
-    createThread();
+    createConversation();
   }, []);
 
   const sendMessage = async (text) => {
     const response = await fetch(
-      `/api/assistants/threads/${threadId}/messages`,
+      `/api/assistants/threads/${conversationId}/messages`,
       {
         method: "POST",
         body: JSON.stringify({
@@ -74,31 +73,63 @@ const Chat = ({ onReceiveAvailabilities }: ChatProps) => {
       }
     );
 
-    const stream = AssistantStream.fromReadableStream(response.body);
-    stream.on("textCreated", () => {
-      setMessages((prevMessages) => [
-        ...prevMessages,
-        { role: "assistant", text: "" },
-      ]);
-    });
-    stream.on("textDelta", (event) => {
-      setMessages((prevMessages) => {
-        const lastMessage = prevMessages[prevMessages.length - 1];
-        const updatedLastMessage = {
-          ...lastMessage,
-          text: lastMessage.text + event.value,
-        };
-        return [...prevMessages.slice(0, -1), updatedLastMessage];
-      });
-    });
-    stream.on("event", (event) => {
-      console.log("event", event);
-      if (event.event === "thread.run.completed") setInputDisabled(false);
-      // @ts-ignore
-      if (event.event === "search_availability")
-        // @ts-ignore
-        onReceiveAvailabilities(event.data);
-    });
+    const body = response.body;
+    if (!body) return;
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const readLoop = async () => {
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let newlineIndex;
+          while ((newlineIndex = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newlineIndex).trim();
+            buffer = buffer.slice(newlineIndex + 1);
+            if (!line) continue;
+            let event;
+            try {
+              event = JSON.parse(line);
+            } catch (err) {
+              console.log("err parse", line);
+              continue;
+            }
+            if (event.event === "response.output_text.delta") {
+              setMessages((prevMessages) => {
+                const lastMessage =
+                  prevMessages[prevMessages.length - 1];
+                if (lastMessage && lastMessage.role === "assistant") {
+                  return [
+                    ...prevMessages.slice(0, -1),
+                    {
+                      ...lastMessage,
+                      text: lastMessage.text + event.delta,
+                    },
+                  ];
+                }
+                return [
+                  ...prevMessages,
+                  { role: "assistant", text: event.delta },
+                ];
+              });
+            } else if (event.event === "search_availability") {
+              onReceiveAvailabilities(event.data);
+            } else if (event.event === "response.completed") {
+              setInputDisabled(false);
+                }
+            }
+          }
+        }
+      } catch (err) {
+        console.log("error", err);
+      } finally {
+        setInputDisabled(false);
+      }
+    };
+    readLoop();
   };
 
   const handleSubmit = (e) => {
