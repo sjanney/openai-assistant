@@ -1,38 +1,11 @@
-import { openai } from "@/app/openai";
-
 export const runtime = "nodejs";
 
-// Create a new assistant
+// The Assistants API is shut down and prompts can only be created in the
+// dashboard. Reusable prompt objects are also deprecated (shutting down
+// 2026-11-30), so inline instructions and tools in application code instead.
+// Configure the prompt id (if still using a dashboard prompt) via the
+// OPENAI_PROMPT_ID environment variable, or remove this endpoint if nothing
+// calls it.
 export async function POST() {
-  const assistant = await openai.beta.assistants.create({
-    instructions: "You are a helpful assistant.",
-    name: "Quickstart Assistant",
-    model: "gpt-4o",
-    tools: [
-      { type: "code_interpreter" },
-      {
-        type: "function",
-        function: {
-          name: "get_weather",
-          description: "Determine weather in my location",
-          parameters: {
-            type: "object",
-            properties: {
-              location: {
-                type: "string",
-                description: "The city and state e.g. San Francisco, CA",
-              },
-              unit: {
-                type: "string",
-                enum: ["c", "f"],
-              },
-            },
-            required: ["location"],
-          },
-        },
-      },
-      { type: "file_search" },
-    ],
-  });
-  return Response.json({ assistantId: assistant.id });
+  return Response.json({ promptId: process.env.OPENAI_PROMPT_ID ?? null });
 }
